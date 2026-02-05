@@ -1,0 +1,8 @@
+config defaults
+    option syn_flood '0'          # 關閉軟體防護，減少中斷
+    option input 'ACCEPT'
+    option output 'ACCEPT'
+    option forward 'REJECT'
+    option flow_offloading '1'    # 軟體引導
+    option hw_flow_offloading '1' # 硬體合閘
+    option drop_invalid '0'       # 追求極速，減少檢查 (僅限家庭內網環境)
