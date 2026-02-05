@@ -49,6 +49,24 @@ sysctl -w net.ipv4.tcp_fastopen=3
 sysctl -w net.ipv4.tcp_rmem="4096 87380 524288"
 sysctl -w net.ipv4.tcp_wmem="4096 16384 524288"
 
+# --- zRAM 引擎升級：zstd 空間摺疊 ---
+
+# 1. 設置 zRAM 壓縮算法為 zstd
+# 如果 zram0 已經在運行，可能需要重啟服務
+if [ -b /dev/zram0 ]; then
+    # 先停止現有交換，切換算法後重啟（或直接在內核初始化時指定）
+    swapoff /dev/zram0 2>/dev/null
+    echo zstd > /sys/block/zram0/comp_algorithm
+
+    # 2. 設置壓縮流數量（MT7621 是 2C4T，設置為 2 效果最佳）
+    echo 2 > /sys/block/zram0/max_comp_streams
+
+    # 3. 恢復交換（大小通常由 zram-config 自動處理，這裡僅確保算法生效）
+    swapon /dev/zram0 2>/dev/null
+
+    echo "zRAM 引擎已升級為 zstd，空間主權進一步擴張。"
+fi
+
 # ---固本培元補丁 ---
 
 # A. 縮短超時時間：及時化瘀，回收 HNAT 表項空間
@@ -72,4 +90,37 @@ ethtool -K eth0 gro on gso on tso on 2>/dev/null
 # F. 提升 TCP 接收/发送缓存上限（让 512M 大内存发挥作用）
 sysctl -w net.core.rmem_max=16777216
 sysctl -w net.core.wmem_max=16777216
+
+# --- MT7621 專用溫和版 KSM ---
+if [ -f /sys/kernel/mm/ksm/run ]; then
+    echo 1 > /sys/kernel/mm/ksm/run
+
+    # 降低掃描強度：每次掃描 50 頁（MT7981 可以是 100）
+    echo 50 > /sys/kernel/mm/ksm/pages_to_scan
+
+    # 增加睡眠時間：每兩次掃描間隔 100 毫秒（減少對 CPU 的打擾）
+    echo 100 > /sys/kernel/mm/ksm/sleep_millisecs
+
+    # 啟動「延遲合併」，僅在系統不忙時工作
+    echo 1 > /sys/kernel/mm/ksm/deferred_timer 2>/dev/null
+fi
+
+# --- zRAM 引擎升級：zstd 空間摺疊 ---
+
+# 1. 設置 zRAM 壓縮算法為 zstd
+# 如果 zram0 已經在運行，可能需要重啟服務
+if [ -b /dev/zram0 ]; then
+    # 先停止現有交換，切換算法後重啟（或直接在內核初始化時指定）
+    swapoff /dev/zram0 2>/dev/null
+    echo zstd > /sys/block/zram0/comp_algorithm
+
+    # 2. 設置壓縮流數量（MT7621 是 2C4T，設置為 2 效果最佳）
+    echo 2 > /sys/block/zram0/max_comp_streams
+
+    # 3. 恢復交換（大小通常由 zram-config 自動處理，這裡僅確保算法生效）
+    swapon /dev/zram0 2>/dev/null
+
+    echo "zRAM 引擎已升級為 zstd，空間主權進一步擴張。"
+fi
+
 exit 0
