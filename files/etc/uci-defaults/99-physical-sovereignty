@@ -1,0 +1,52 @@
+#!/bin/sh
+
+# --- MT7621 物理主權：專屬調度與 HNAT 加速腳本 ---
+
+sleep 10
+
+# 1. 核心分工：MT7621 有 4 個邏輯核心 (CPU0-3)
+# CPU0/1 (物理核0): 負責系統、LuCI、底層服務
+# CPU2/3 (物理核1): 負責無線數據收發 (mt76)
+# 這樣可以徹底避免「開網頁卡視頻」的情況
+
+# 無線中斷定位 (mt7615/mt7603)
+WIFI_IRQS=$(grep -E 'mt76' /proc/interrupts | cut -d: -f1 | tr -d ' ')
+
+for irq in $WIFI_IRQS; do
+    # 將無線中斷交叉綁定到 CPU2 和 CPU3
+    # 遮罩 4 (二進位 0100 -> CPU2), 遮罩 8 (二進位 1000 -> CPU3)
+    echo 4 > /proc/irq/$irq/smp_affinity 2>/dev/null
+done
+
+# 2. 有線網路 (Ethernet) 與 HNAT 優化
+# MT7621 的有線中斷通常是 IRQ 10 或 21
+for irq in 10 21; do
+    if [ -d "/proc/irq/$irq" ]; then
+        echo 1 > "/proc/irq/$irq/smp_affinity" # 留在 CPU0 處理
+    fi
+done
+
+# 3. RPS/RFS 軟分流：讓軟中斷追隨硬中斷
+for dev in ra0 rax0 wlan0; do
+    if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
+        echo c > "/sys/class/net/$dev/queues/rx-0/rps_cpus" # 掩碼 c = CPU2+3
+        echo 1024 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt"
+    fi
+done
+
+for dev in eth0 eth1; do
+    if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
+        echo 3 > "/sys/class/net/$dev/queues/rx-0/rps_cpus" # 掩碼 3 = CPU0+1
+        echo 1024 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt"
+    fi
+done
+
+# 4. 內核參數優化 (針對 MIPS 弱 CPU 強 HNAT 的特性)
+sysctl -w net.core.netdev_max_backlog=1000
+sysctl -w net.core.rps_sock_flow_entries=16384
+sysctl -w net.ipv4.tcp_fastopen=3
+# MT7621 內存小，緩衝區不宜過大，保持精悍
+sysctl -w net.ipv4.tcp_rmem="4096 87380 524288"
+sysctl -w net.ipv4.tcp_wmem="4096 16384 524288"
+
+exit 0
