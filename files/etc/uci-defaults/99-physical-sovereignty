@@ -49,4 +49,17 @@ sysctl -w net.ipv4.tcp_fastopen=3
 sysctl -w net.ipv4.tcp_rmem="4096 87380 524288"
 sysctl -w net.ipv4.tcp_wmem="4096 16384 524288"
 
+# ---固本培元補丁 ---
+
+# A. 縮短超時時間：及時化瘀，回收 HNAT 表項空間
+sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=1200
+sysctl -w net.netfilter.nf_conntrack_udp_timeout=60
+
+# B. 網卡中斷聚合：調節呼吸，降低氣急（CPU 抖動）
+# 針對 MT7981/MT7621 的常用網卡名稱 eth0
+ethtool -C eth0 rx-usecs 100 tx-usecs 100 2>/dev/null
+
+# C. 先天注入 BBR：優化流體動力，確保秒開穩定性
+sysctl -w net.core.default_qdisc=fq
+sysctl -w net.ipv4.tcp_congestion_control=bbr
 exit 0
