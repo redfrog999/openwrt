@@ -68,4 +68,8 @@ sysctl -w net.core.netdev_max_backlog=5000
 
 # E. 開啟網卡的通用接收/發送卸載，減輕 CPU 拆包壓力
 ethtool -K eth0 gro on gso on tso on 2>/dev/null
+
+# F. 提升 TCP 接收/发送缓存上限（让 512M 大内存发挥作用）
+sysctl -w net.core.rmem_max=16777216
+sysctl -w net.core.wmem_max=16777216
 exit 0
