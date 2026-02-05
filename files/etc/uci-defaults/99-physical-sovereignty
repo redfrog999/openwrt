@@ -62,4 +62,10 @@ ethtool -C eth0 rx-usecs 100 tx-usecs 100 2>/dev/null
 # C. 先天注入 BBR：優化流體動力，確保秒開穩定性
 sysctl -w net.core.default_qdisc=fq
 sysctl -w net.ipv4.tcp_congestion_control=bbr
+
+# D. 優化內核隊列長度
+sysctl -w net.core.netdev_max_backlog=5000
+
+# E. 開啟網卡的通用接收/發送卸載，減輕 CPU 拆包壓力
+ethtool -K eth0 gro on gso on tso on 2>/dev/null
 exit 0
