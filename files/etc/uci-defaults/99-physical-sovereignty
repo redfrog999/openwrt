@@ -96,4 +96,19 @@ if [ -f /sys/kernel/mm/ksm/run ]; then
     echo 1 > /sys/kernel/mm/ksm/deferred_timer 2>/dev/null
 fi
 
+# --- 物理消噪：让 GFW 摸不到底 ---
+
+# 1. 忽略所有广播 ICMP 回应，防止被利用进行放大攻击扫描
+echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
+
+# 2. 忽略伪造的错误响应，减少内核处理垃圾包的 CPU 损耗
+echo 1 > /proc/sys/net/ipv4/icmp_ignore_bogus_error_responses
+
+# 3. 缩短 TCP 连接在 FIN-WAIT-2 状态的时间（从 60s 降到 15s）
+# 物理意义：快进快出，握手完事马上回收内存，不给 GFW 观察连接残骸的机会
+echo 15 > /proc/sys/net/ipv4/tcp_fin_timeout
+
+# 4. 开启 TCP 窗口缩放 (RFC 1323)，让 Hy2 的大带宽传输更符合现代标准
+echo 1 > /proc/sys/net/ipv4/tcp_window_scaling
+
 exit 0
