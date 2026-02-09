@@ -68,7 +68,7 @@ sysctl -w net.netfilter.nf_conntrack_udp_timeout=60
 ethtool -C eth0 rx-usecs 100 tx-usecs 100 2>/dev/null
 
 # C. 先天注入 BBR：優化流體動力，確保秒開穩定性
-sysctl -w net.core.default_qdisc=fq
+sysctl -w net.core.default_qdisc=fq_codel
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 
 # D. 優化內核隊列長度
@@ -110,4 +110,44 @@ echo 15 > /proc/sys/net/ipv4/tcp_fin_timeout
 # 4. 开启 TCP 窗口缩放 (RFC 1323)，让 Hy2 的大带宽传输更符合现代标准
 echo 1 > /proc/sys/net/ipv4/tcp_window_scaling
 
+# [MT7621 + MT7615D 專用十全大補丸 - 2026 終極版]
+
+# 1. 物理接口對齊：針對截圖中的 wlan1 (WWAN)
+# 關閉無線省電，這是解決 MT7615D 跳 Ping 的第一針
+iw dev wlan1 set power_save off
+ifconfig wlan1 txqueuelen 5000
+
+# 2. 開啟發哥靈魂：HWNAT (硬件轉發)
+# MT7621 必打補丁，否則 4K 視頻會讓 CPU 滿載
+uci set network.lan.hwnat='1'
+# 針對中繼流開啟 HNAT 卸載
+if [ -d "/sys/kernel/debug/hnat" ]; then
+    echo 1 > /sys/kernel/debug/hnat/hook_relay
+    echo 1 > /sys/kernel/debug/hnat/all_entry_keepalive
+fi
+
+# 3. 核心行針：MT7621 雙核四線程優化
+# 將 wlan1 (中繼進項) 綁定到 Core 1 (Thread 2)
+# 將 lan/wan 綁定到 Core 0 (Thread 0)
+WWAN_IRQ=$(grep -m 1 "wlan1" /proc/interrupts | cut -d ':' -f 1 | tr -d ' ')
+if [ -n "$WWAN_IRQ" ]; then
+    echo 2 > /proc/irq/$WWAN_IRQ/smp_affinity # 綁定到第二個邏輯核心
+fi
+
+# 4. 全球通：內核網絡參數 (視頻/遊戲/下載)
+cat >> /etc/sysctl.conf <<EOF
+# 消滅 Bufferbloat，遊戲不跳 Ping
+net.core.default_qdisc = fq_codel
+net.ipv4.tcp_congestion_control = bbr
+# 小包優化：網頁秒開
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_low_latency = 1
+# 針對 MT7621 內存較小的特性，合理分配緩衝
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+EOF
+
+# 5. 提交物理配置
+uci commit network
+sysctl -p
 exit 0
