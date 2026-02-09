@@ -136,9 +136,6 @@ fi
 
 # 4. 全球通：內核網絡參數 (視頻/遊戲/下載)
 cat >> /etc/sysctl.conf <<EOF
-# 消滅 Bufferbloat，遊戲不跳 Ping
-net.core.default_qdisc = fq_codel
-net.ipv4.tcp_congestion_control = bbr
 # 小包優化：網頁秒開
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_low_latency = 1
