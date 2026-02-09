@@ -42,7 +42,6 @@ for dev in eth0 eth1; do
 done
 
 # 4. 內核參數優化 (針對 MIPS 弱 CPU 強 HNAT 的特性)
-sysctl -w net.core.netdev_max_backlog=1000
 sysctl -w net.core.rps_sock_flow_entries=16384
 sysctl -w net.ipv4.tcp_fastopen=3
 # MT7621 內存小，緩衝區不宜過大，保持精悍
@@ -72,7 +71,7 @@ sysctl -w net.core.default_qdisc=fq_codel
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 
 # D. 優化內核隊列長度
-sysctl -w net.core.netdev_max_backlog=5000
+sysctl -w net.core.netdev_max_backlog=65535
 
 # E. 開啟網卡的通用接收/發送卸載，減輕 CPU 拆包壓力
 ethtool -K eth0 gro on gso on tso on 2>/dev/null
@@ -112,10 +111,16 @@ echo 1 > /proc/sys/net/ipv4/tcp_window_scaling
 
 # [MT7621 + MT7615D 專用十全大補丸 - 2026 終極版]
 
-# 1. 物理接口對齊：針對截圖中的 wlan1 (WWAN)
-# 關閉無線省電，這是解決 MT7615D 跳 Ping 的第一針
-iw dev wlan1 set power_save off
-ifconfig wlan1 txqueuelen 5000
+# 1. 自動接口識別與物理調優
+# 針對不同的發哥中繼接口名進行普適性處理
+for dev in apclix0 wlan1 wlan0; do
+    if [ -d "/sys/class/net/$dev" ]; then
+        iw dev $dev set power_save off  # 物理關閉省電，消滅跳 Ping
+        ifconfig $dev txqueuelen 5000  # 撐開發送隊列
+        # 開啟 RPS 多核接收加速 (解鎖物理上限)
+        echo "f" > /sys/class/net/$dev/queues/rx-0/rps_cpus 2>/dev/null
+    fi
+done
 
 # 2. 開啟發哥靈魂：HWNAT (硬件轉發)
 # MT7621 必打補丁，否則 4K 視頻會讓 CPU 滿載
@@ -142,9 +147,34 @@ net.ipv4.tcp_low_latency = 1
 # 針對 MT7621 內存較小的特性，合理分配緩衝
 net.core.rmem_max = 8388608
 net.core.wmem_max = 8388608
+# 減少日誌 IO 損耗
+vm.swappiness = 10
 EOF
 
-# 5. 提交物理配置
+# 5. 系統層：禁用物理內耗
+uci set system.@system[0].log_type='buffer'
+uci set system.@system[0].conloglevel='4'
+uci set wireless.radio0.bgscan='0' 2>/dev/null
+uci set wireless.radio1.bgscan='0' 2>/dev/null
+
+# 6. 提交物理配置
 uci commit network
+uci commit wireless
+uci commit system
+
+# 針對 MT7615D 的無線信號穩定性增強
+# 強制設置信道切換模式，減少中繼時的掉包
+uci set wireless.default_radio1.disassoc_low_ack='0'
+uci set wireless.radio1.noscan='1' # 鎖定信道，拒絕背景掃描（CS2 玩家必修）
+
+# 物理調氣：針對 MT7621 內存管理
+# 減少分頁抖動，讓小包轉發更穩
+echo "vm.min_free_kbytes = 4096" >> /etc/sysctl.conf
+echo "vm.swappiness = 10" >> /etc/sysctl.conf
+
+# 針對 wlan1/apclix0 開啟多核接收加速
+echo "f" > /sys/class/net/wlan1/queues/rx-0/rps_cpus 2>/dev/null
+echo "4096" > /proc/sys/net/core/rps_sock_flow_entries
+
 sysctl -p
 exit 0
