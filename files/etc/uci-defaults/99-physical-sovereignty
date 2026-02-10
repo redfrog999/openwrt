@@ -1,180 +1,81 @@
 #!/bin/sh
-
-# --- MT7621 物理主權：專屬調度與 HNAT 加速腳本 ---
+# --- MT7621 + MT7615D 物理主權 v2.2 (極限煉丹版) ---
 
 sleep 10
 
-# 1. 核心分工：MT7621 有 4 個邏輯核心 (CPU0-3)
-# CPU0/1 (物理核0): 負責系統、LuCI、底層服務
-# CPU2/3 (物理核1): 負責無線數據收發 (mt76)
-# 這樣可以徹底避免「開網頁卡視頻」的情況
+# 1. 物理線程綁定 (IRQ Affinity)
+# 將無線中斷鎖定在 CPU2/3 (物理第二核)，有線鎖定在 CPU0
+ETH_IRQ=$(grep -m1 "ethernet" /proc/interrupts | cut -d: -f1 | tr -d ' ')
+WIFI_IRQS=$(grep 'mt76' /proc/interrupts | cut -d: -f1)
 
-# 無線中斷定位 (mt7615/mt7603)
-WIFI_IRQS=$(grep -E 'mt76' /proc/interrupts | cut -d: -f1 | tr -d ' ')
-
+[ -n "$ETH_IRQ" ] && echo 1 > "/proc/irq/$ETH_IRQ/smp_affinity"
 for irq in $WIFI_IRQS; do
-    # 將無線中斷交叉綁定到 CPU2 和 CPU3
-    # 遮罩 4 (二進位 0100 -> CPU2), 遮罩 8 (二進位 1000 -> CPU3)
-    echo 4 > /proc/irq/$irq/smp_affinity 2>/dev/null
+    echo 4 > "/proc/irq/$irq/smp_affinity"
 done
 
-# 2. 有線網路 (Ethernet) 與 HNAT 優化
-# MT7621 的有線中斷通常是 IRQ 10 或 21
-for irq in 10 21; do
-    if [ -d "/proc/irq/$irq" ]; then
-        echo 1 > "/proc/irq/$irq/smp_affinity" # 留在 CPU0 處理
-    fi
-done
+# 2. 徹底關閉 RPS (去噪，回歸物理核心響應)
+for rps in /sys/class/net/*/queues/rx-*/rps_cpus; do echo 0 > "$rps"; done
 
-# 3. RPS/RFS 軟分流：讓軟中斷追隨硬中斷
-for dev in ra0 rax0 wlan0; do
-    if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
-        echo c > "/sys/class/net/$dev/queues/rx-0/rps_cpus" # 掩碼 c = CPU2+3
-        echo 1024 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt"
-    fi
-done
-
-for dev in eth0 eth1; do
-    if [ -d "/sys/class/net/$dev/queues/rx-0" ]; then
-        echo 3 > "/sys/class/net/$dev/queues/rx-0/rps_cpus" # 掩碼 3 = CPU0+1
-        echo 1024 > "/sys/class/net/$dev/queues/rx-0/rps_flow_cnt"
-    fi
-done
-
-# 4. 內核參數優化 (針對 MIPS 弱 CPU 強 HNAT 的特性)
-sysctl -w net.core.rps_sock_flow_entries=16384
-sysctl -w net.ipv4.tcp_fastopen=3
-# MT7621 內存小，緩衝區不宜過大，保持精悍
-sysctl -w net.ipv4.tcp_rmem="4096 87380 524288"
-sysctl -w net.ipv4.tcp_wmem="4096 16384 524288"
-
-# 确保 zRAM 使用 zstd 强力压缩 (针对 MT7621/7981)
-if [ -d /sys/block/zram0 ]; then
-    # 尝试在运行时切换算法（如果当前未挂载）
-    swapoff /dev/zram0 2>/dev/null
-    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null
-    swapon -p 10 /dev/zram0 2>/dev/null
-fi
-
-# ---固本培元補丁 ---
-
-# A. 縮短超時時間：及時化瘀，回收 HNAT 表項空間
-sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=1200
-sysctl -w net.netfilter.nf_conntrack_udp_timeout=60
-
-# B. 網卡中斷聚合：調節呼吸，降低氣急（CPU 抖動）
-# 針對 MT7981/MT7621 的常用網卡名稱 eth0
-ethtool -C eth0 rx-usecs 100 tx-usecs 100 2>/dev/null
-
-# C. 先天注入 BBR：優化流體動力，確保秒開穩定性
-sysctl -w net.core.default_qdisc=fq_codel
-sysctl -w net.ipv4.tcp_congestion_control=bbr
-
-# D. 優化內核隊列長度
-sysctl -w net.core.netdev_max_backlog=65535
-
-# E. 開啟網卡的通用接收/發送卸載，減輕 CPU 拆包壓力
-ethtool -K eth0 gro on gso on tso on 2>/dev/null
-
-# F. 提升 TCP 接收/发送缓存上限（让 512M 大内存发挥作用）
-sysctl -w net.core.rmem_max=16777216
-sysctl -w net.core.wmem_max=16777216
-
-# --- MT7621 專用溫和版 KSM ---
+# 3. 內存雙引擎：KSM + zRAM (256M 物理內存折疊)
+# [KSM] 溫和掃描，不搶 CPU 週期
 if [ -f /sys/kernel/mm/ksm/run ]; then
-    echo 1 > /sys/kernel/mm/ksm/run
-
-    # 降低掃描強度：每次掃描 50 頁（MT7981 可以是 100）
     echo 50 > /sys/kernel/mm/ksm/pages_to_scan
-
-    # 增加睡眠時間：每兩次掃描間隔 100 毫秒（減少對 CPU 的打擾）
-    echo 100 > /sys/kernel/mm/ksm/sleep_millisecs
-
-    # 啟動「延遲合併」，僅在系統不忙時工作
-    echo 1 > /sys/kernel/mm/ksm/deferred_timer 2>/dev/null
+    echo 200 > /sys/kernel/mm/ksm/sleep_millisecs
+    echo 1 > /sys/kernel/mm/ksm/run
 fi
 
-# --- 物理消噪：让 GFW 摸不到底 ---
+# [zRAM] 針對 1.1GHz 超頻優化：zstd 高壓縮
+if [ -d /sys/block/zram0 ]; then
+    swapoff /dev/zram0 2>/dev/null
+    echo zstd > /sys/block/zram0/comp_algorithm
+    echo 128M > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 10 /dev/zram0
+fi
 
-# 1. 忽略所有广播 ICMP 回应，防止被利用进行放大攻击扫描
-echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
+# 4. 網卡卸載與中斷聚合 (1.1GHz 冷靜補丁)
+ethtool -K eth0 gro on gso on tso on 2>/dev/null
+ethtool -C eth0 rx-usecs 150 tx-usecs 150 2>/dev/null
 
-# 2. 忽略伪造的错误响应，减少内核处理垃圾包的 CPU 损耗
-echo 1 > /proc/sys/net/ipv4/icmp_ignore_bogus_error_responses
+# 5. MT7615D 無線私有優化 (中繼核心補丁)
+# 鎖死中繼掃描頻率，開啟 VHT 加速
+uci batch <<EOF
+# 關閉 5G 背景掃描，防止 CS/吃雞 跳 Ping
+set wireless.radio0.bgscan='0'
+set wireless.radio1.bgscan='0'
+# 設置 VHT160 或 80 高性能模式 (視驅動支持)
+set wireless.radio1.vht_mimo='1'
+set wireless.radio1.txqueuelen='5000'
+# 禁用無線省電 (物理級鎖定)
+set wireless.default_radio1.disassoc_low_ack='0'
+set wireless.radio1.noscan='1'
+# 強制開啟 HNAT (如果底層支持)
+set network.lan.hwnat='1'
+EOF
+uci commit wireless
+uci commit network
 
-# 3. 缩短 TCP 连接在 FIN-WAIT-2 状态的时间（从 60s 降到 15s）
-# 物理意义：快进快出，握手完事马上回收内存，不给 GFW 观察连接残骸的机会
-echo 15 > /proc/sys/net/ipv4/tcp_fin_timeout
-
-# 4. 开启 TCP 窗口缩放 (RFC 1323)，让 Hy2 的大带宽传输更符合现代标准
-echo 1 > /proc/sys/net/ipv4/tcp_window_scaling
-
-# [MT7621 + MT7615D 專用十全大補丸 - 2026 終極版]
-
-# 1. 自動接口識別與物理調優
-# 針對不同的發哥中繼接口名進行普適性處理
-for dev in apclix0 wlan1 wlan0; do
-    if [ -d "/sys/class/net/$dev" ]; then
-        iw dev $dev set power_save off  # 物理關閉省電，消滅跳 Ping
-        ifconfig $dev txqueuelen 5000  # 撐開發送隊列
-        # 開啟 RPS 多核接收加速 (解鎖物理上限)
-        echo "f" > /sys/class/net/$dev/queues/rx-0/rps_cpus 2>/dev/null
-    fi
-done
-
-# 2. 開啟發哥靈魂：HWNAT (硬件轉發)
-# MT7621 必打補丁，否則 4K 視頻會讓 CPU 滿載
-uci set network.lan.hwnat='1'
-# 針對中繼流開啟 HNAT 卸載
+# 6. HNAT 中繼補丁 (物理喚醒)
 if [ -d "/sys/kernel/debug/hnat" ]; then
     echo 1 > /sys/kernel/debug/hnat/hook_relay
     echo 1 > /sys/kernel/debug/hnat/all_entry_keepalive
 fi
 
-# 3. 核心行針：MT7621 雙核四線程優化
-# 將 wlan1 (中繼進項) 綁定到 Core 1 (Thread 2)
-# 將 lan/wan 綁定到 Core 0 (Thread 0)
-WWAN_IRQ=$(grep -m 1 "wlan1" /proc/interrupts | cut -d ':' -f 1 | tr -d ' ')
-if [ -n "$WWAN_IRQ" ]; then
-    echo 2 > /proc/irq/$WWAN_IRQ/smp_affinity # 綁定到第二個邏輯核心
-fi
-
-# 4. 全球通：內核網絡參數 (視頻/遊戲/下載)
+# 7. 內核消噪與精煉 TCP 棧 (GFW 屏蔽方案)
 cat >> /etc/sysctl.conf <<EOF
-# 小包優化：網頁秒開
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_low_latency = 1
-# 針對 MT7621 內存較小的特性，合理分配緩衝
-net.core.rmem_max = 8388608
-net.core.wmem_max = 8388608
-# 減少日誌 IO 損耗
-vm.swappiness = 10
+net.core.default_qdisc=fq_codel
+net.ipv4.tcp_congestion_control=bbr
+net.core.rmem_max=2097152
+net.core.wmem_max=2097152
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.icmp_echo_ignore_broadcasts=1
+vm.swappiness=60
+vm.min_free_kbytes=4096
 EOF
 
-# 5. 系統層：禁用物理內耗
-uci set system.@system[0].log_type='buffer'
-uci set system.@system[0].conloglevel='4'
-uci set wireless.radio0.bgscan='0' 2>/dev/null
-uci set wireless.radio1.bgscan='0' 2>/dev/null
-
-# 6. 提交物理配置
-uci commit network
-uci commit wireless
-uci commit system
-
-# 針對 MT7615D 的無線信號穩定性增強
-# 強制設置信道切換模式，減少中繼時的掉包
-uci set wireless.default_radio1.disassoc_low_ack='0'
-uci set wireless.radio1.noscan='1' # 鎖定信道，拒絕背景掃描（CS2 玩家必修）
-
-# 物理調氣：針對 MT7621 內存管理
-# 減少分頁抖動，讓小包轉發更穩
-echo "vm.min_free_kbytes = 4096" >> /etc/sysctl.conf
-echo "vm.swappiness = 10" >> /etc/sysctl.conf
-
-# 針對 wlan1/apclix0 開啟多核接收加速
-echo "f" > /sys/class/net/wlan1/queues/rx-0/rps_cpus 2>/dev/null
-echo "4096" > /proc/sys/net/core/rps_sock_flow_entries
+# 8. 遊戲 UDP 染色優先 (NFTables)
+nft insert rule inet fw4 mangle_postrouting udp dport { 1024-65535 } udp length 0-128 ip dscp set ef 2>/dev/null
 
 sysctl -p
 exit 0
