@@ -1,8 +1,10 @@
 config defaults
-    option syn_flood '0'          # 關閉軟體防護，減少中斷
     option input 'ACCEPT'
     option output 'ACCEPT'
     option forward 'REJECT'
-    option flow_offloading '1'    # 軟體引導
-    option hw_flow_offloading '1' # 硬體合閘
-    option drop_invalid '0'       # 追求極速，減少檢查 (僅限家庭內網環境)
+    option syn_flood '1'
+    option fullcone '1'
+    # 核心：徹底關閉所有 Offload，回歸物理核心調度
+    option flow_offloading '0'
+    option flow_offloading_hw '0'
+    option nftables_priority '0'
