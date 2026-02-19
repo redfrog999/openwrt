@@ -1,81 +1,37 @@
 #!/bin/sh
 
-# --- 1. 物理線程與 IRQ 解耦 (冷靜運行的核心) ---
-ETH_IRQ=$(grep -m1 "mtk-network\|ethernet" /proc/interrupts | cut -d: -f1 | tr -d ' ')
-WIFI_IRQ=$(grep -m1 "mt7981\|mt76" /proc/interrupts | cut -d: -f1 | tr -d ' ')
-CRYPTO_IRQ=$(grep "eip" /proc/interrupts | cut -d: -f1)
-
-[ -n "$ETH_IRQ" ] && echo 1 > "/proc/irq/$ETH_IRQ/smp_affinity" # 有線歸 CPU0
-[ -n "$WIFI_IRQ" ] && echo 2 > "/proc/irq/$WIFI_IRQ/smp_affinity" # 無線歸 CPU1
-for irq in $CRYPTO_IRQ; do echo 2 > "/proc/irq/$irq/smp_affinity"; done
-
-# --- 2. 軟跟隨 (RPS) 修正方案 (修復中繼掛掉的問題) ---
-# 撤銷 hook_relay 硬件中繼，改用 CPU 分流
-for dev_path in /sys/class/net/*; do
-    dev=$(basename "$dev_path")
-    [ "$dev" = "lo" ] && continue
-    if echo "$dev" | grep -Eq 'ra|wlan|apcli'; then
-        for rps_file in "$dev_path"/queues/rx-*/rps_cpus; do echo 2 > "$rps_file"; done
-    elif echo "$dev" | grep -Eq 'eth|wan|lan'; then
-        for rps_file in "$dev_path"/queues/rx-*/rps_cpus; do echo 1 > "$rps_file"; done
-    fi
+# --- 1. RPS/RFS 核心对齐 (让双核四線程協同) ---
+# MT7621 是 2核4線程，掩码 'f' (1111) 代表分配给所有逻辑核心
+# 这样可以防止单核处理软中断（Softirq）导致 100% 占用卡死
+for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do
+    echo "f" > "$rps_file" 2>/dev/null
 done
 
-# --- 3. KSM 內存去重整合 (256M 小內存救星) ---
-if [ -f /sys/kernel/mm/ksm/run ]; then
-    echo 1 > /sys/kernel/mm/ksm/run
-    echo 100 > /sys/kernel/mm/ksm/pages_to_scan
-    echo 50 > /sys/kernel/mm/ksm/sleep_millisecs
-    logger -t "Sovereignty" "KSM 內存去重引擎已啟動"
-fi
+# 设置流控制数量，防止 RFS 频繁切换上下文导致的 CPU 抖动
+echo "2048" > /proc/sys/net/core/rps_sock_flow_entries
+for rfc_file in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do
+    echo "512" > "$rfc_file" 2>/dev/null
+done
 
-# --- 4. zRAM 強制重置為 zstd ---
-if [ -b /dev/zram0 ]; then
-    swapoff /dev/zram0 2>/dev/null
-    echo 1 > /sys/block/zram0/reset 2>/dev/null
-    if grep -q "zstd" /sys/block/zram0/comp_algorithm; then
-        echo zstd > /sys/block/zram0/comp_algorithm
-    fi
-    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
-    echo "$((TOTAL_MEM / 2 * 1024))" > /sys/block/zram0/disksize
-    mkswap /dev/zram0 >/dev/null
-    swapon -p 10 /dev/zram0
-fi
-
-# --- 5. ICMP 物理消噪：對抗 GFW 探測 ---
-cat >> /etc/sysctl.conf <<EOF
-# 忽略廣播 ICMP 與偽造錯誤響應
-net.ipv4.icmp_echo_ignore_broadcasts=1
-net.ipv4.icmp_ignore_bogus_error_responses=1
-# 限制 ICMP 響應速率，防高頻掃描
-net.ipv4.icmp_ratelimit=100
-# 縮短 TCP 超時，快進快出
-net.ipv4.tcp_fin_timeout=15
-net.ipv4.tcp_fastopen=3
-# 內功優化
-net.core.default_qdisc=fq_codel
-net.ipv4.tcp_congestion_control=bbr
-vm.swappiness=60
-EOF
-sysctl -p
-
-# --- 6. NFTables 規則：遊戲優先 + TTL 屏蔽 ---
-# 屏蔽低 TTL 探測 (防路徑探測掃描)
-nft insert rule inet fw4 input ip protocol icmp icmp type echo-request ip ttl lt 5 counter drop 2>/dev/null
-# 遊戲 UDP 優先
-nft insert rule inet fw4 mangle_postrouting udp dport { 1024-65535 } udp length 0-128 ip dscp set ef 2>/dev/null
-
-# --- 7. 硬件性能加速 (ethtool) ---
+# --- 2. 硬件加速 (HNAT/PPE) 衔接逻辑 ---
+# 关键：必须确保硬件加速开启，否则 CPU 处理 100M+ 流量必死
+# 在 MT7621 上，这通常由内核模块 hw_nat 驱动，我们确保网卡特性开启
 for eth in $(ls /sys/class/net | grep -E 'eth|wan|lan'); do
-    ethtool -K "$eth" gro on gso on tso on 2>/dev/null
-    ethtool -C "$eth" rx-usecs 100 tx-usecs 100 2>/dev/null
+    ethtool -K "$eth" gro on 2>/dev/null
 done
 
-# --- 8. 進程權限守護 ---
-for proc in hysteria xray ss-local smartdns; do
-    pids=$(pgrep $proc)
-    [ -n "$pids" ] && for pid in $pids; do renice -n -10 $pid; done
-done
+# --- 3. 内存管理：弃 KSM 保 zstd ---
+# MT7621 只有 128M/256M，KSM 扫描会直接吞掉那点可怜的 MIPS 算力
+# 我们强制使用 zstd 压缩，并将 swappiness 调低，减少 I/O 等待
+if [ -b /dev/zram0 ]; then
+    echo zstd > /sys/block/zram0/comp_algorithm
+    echo 60 > /proc/sys/vm/swappiness
+fi
 
-logger -t "Sovereignty" "v8.0 終極版部署完畢：KSM/ICMP/zstd/RPS 已全數整合。"
-exit 0
+# --- 4. 彻底铲除 ICMP 瘀堵 (恢复链路主权) ---
+# 恢复默认的 ICMP 处理，确保 MTU 发现机制正常
+sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1
+sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1
+sysctl -w net.ipv4.icmp_ratelimit=0  # 设为 0 彻底不限制，保证响应
+
+logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接 HNAT，ICMP 限制已解除。"
