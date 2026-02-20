@@ -83,4 +83,21 @@ fi
 uci commit wireless
 # 注意：在 uci-defaults 里不需要执行 wifi restart，系统初始化会自动加载新配置
 
+# --- 6.Passwall改造为MRS轻量尖刀版
+
+# 1.告诉 PassWall 使用我们固化的 Xray 资源路径
+uci set passwall.@global[0].xray_res_path='/etc/xray/rules'
+
+# 2.核心分流逻辑设定：
+# 我们不使用重型的 .dat，直接指定 MRS 规则
+uci set passwall.@global[0].tcp_proxy_mode='chnroute'
+uci set passwall.@global[0].udp_proxy_mode='chnroute'
+#!/bin/sh
+
+# 3.针对 AI 全集和 GPT 的精准对位 (假设你已经在 PassWall UI 预设了这些标签)
+# 强制让特定流量通过 Xray 的分流引擎解析这些 MRS
+uci set passwall.@global[0].remote_dns='1.1.1.1' # 配合 chinadns-ng
+
+uci commit passwall
+exit 0
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接 HNAT，ICMP 限制已解除。"
