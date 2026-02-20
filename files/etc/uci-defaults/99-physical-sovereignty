@@ -34,4 +34,23 @@ sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1
 sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1
 sysctl -w net.ipv4.icmp_ratelimit=0  # 设为 0 彻底不限制，保证响应
 
+# --- 5. 设定mt7621养老参数扶持内存无oom
+# 1. 降低连接数压力，保护 256M 内存
+sysctl -w net.netfilter.nf_conntrack_max=16384
+
+# 2. 缩短连接释放时间，让老兵快速“回气”
+sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=600
+sysctl -w net.netfilter.nf_conntrack_tcp_timeout_close_wait=30
+
+# 3. 适度的网卡队列，防止延迟堆积
+sysctl -w net.core.netdev_max_backlog=2048
+
+# 4. 针对 74Kc 的 TCP 优化
+sysctl -w net.ipv4.tcp_fastopen=3
+
+# 5. 针对无线环境优化
+# 强制开启某些 Wi-Fi 优化参数，减少老手机的延迟
+uci set wireless.radio0.noscan='1' # 强制 40MHz 不扫描，老 MIPS 稳如狗
+uci commit wireless
+
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接 HNAT，ICMP 限制已解除。"
