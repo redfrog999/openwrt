@@ -24,8 +24,15 @@ done
 # MT7621 只有 128M/256M，KSM 扫描会直接吞掉那点可怜的 MIPS 算力
 # 我们强制使用 zstd 压缩，并将 swappiness 调低，减少 I/O 等待
 if [ -b /dev/zram0 ]; then
-    echo zstd > /sys/block/zram0/comp_algorithm
-    echo 60 > /proc/sys/vm/swappiness
+    swapoff /dev/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    if grep -q "zstd" /sys/block/zram0/comp_algorithm; then
+        echo zstd > /sys/block/zram0/comp_algorithm
+    fi
+    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
+    echo "$((TOTAL_MEM / 2 * 1024))" > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 10 /dev/zram0
 fi
 
 # --- 4. 彻底铲除 ICMP 瘀堵 (恢复链路主权) ---
@@ -47,6 +54,9 @@ sysctl -w net.core.netdev_max_backlog=2048
 
 # 4. 针对 74Kc 的 TCP 优化
 sysctl -w net.ipv4.tcp_fastopen=3
+sysctl -w net.core.default_qdisc=fq_codel
+sysctl -w net.ipv4.tcp_congestion_control=bbr
+sysctl -w vm.swappiness=60
 
 # 5. 针对无线环境优化
 # 1. 自动定位 2.4G 和 5G 网卡
