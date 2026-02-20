@@ -57,14 +57,5 @@ done
 [ -n "$(uci get wireless.radio1 2>/dev/null)" ] && uci set wireless.radio1.bandwidth='80MHz'
 uci commit wireless
 
-# --- 7. Passwall 改造为 MRS 轻量尖刀版 ---
-# 确保路径与你的 DIY2 锻造路径一致
-uci set passwall.@global[0].xray_res_path='/etc/xray/rules'
-uci set passwall.@global[0].tcp_proxy_mode='chnroute'
-uci set passwall.@global[0].udp_proxy_mode='chnroute'
-uci set passwall.@global[0].remote_dns='1.1.1.1'
-
-uci commit passwall
-
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接，MRS 规则已对位。"
 exit 0
