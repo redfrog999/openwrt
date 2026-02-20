@@ -49,8 +49,28 @@ sysctl -w net.core.netdev_max_backlog=2048
 sysctl -w net.ipv4.tcp_fastopen=3
 
 # 5. 针对无线环境优化
-# 强制开启某些 Wi-Fi 优化参数，减少老手机的延迟
-uci set wireless.radio0.noscan='1' # 强制 40MHz 不扫描，老 MIPS 稳如狗
+# 1. 自动定位 2.4G 和 5G 网卡
+# MT7621 常见的是 radio0 (2.4G) 和 radio1 (5G)
+# 我们用循环处理，确保所有无线接口都应用优化
+
+for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
+    # 强制不扫描邻居频道（解决 MT7621 开启 40MHz/80MHz 时的“退让”导致的掉速）
+    uci set wireless.${radio}.noscan='1'
+    
+    # 针对老兵的稳定性优化：固定国家码为 US 或 AU（信号强度通常更高）
+    uci set wireless.${radio}.country='AU’
+
+    # 禁用过时的 802.11b 模式，减少管理帧对 CPU 的干扰
+    uci set wireless.${radio}.legacy_rates='0'
+done
+
+# 2. 针对 5G 频段的特定加持 (如果有 radio1)
+if uci get wireless.radio1 >/dev/null 2>&1; then
+    uci set wireless.radio1.bandwidth='80MHz'
+fi
+
+# 3. 提交修改并强制生效
 uci commit wireless
+# 注意：在 uci-defaults 里不需要执行 wifi restart，系统初始化会自动加载新配置
 
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接 HNAT，ICMP 限制已解除。"
