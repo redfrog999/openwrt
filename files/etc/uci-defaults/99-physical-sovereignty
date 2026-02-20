@@ -1,103 +1,70 @@
 #!/bin/sh
 
-# --- 1. RPS/RFS 核心对齐 (让双核四線程協同) ---
-# MT7621 是 2核4線程，掩码 'f' (1111) 代表分配给所有逻辑核心
-# 这样可以防止单核处理软中断（Softirq）导致 100% 占用卡死
+# --- 1. RPS/RFS 核心对齐 ---
+# f = 1111 (4个逻辑核心全开)
 for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do
     echo "f" > "$rps_file" 2>/dev/null
 done
 
-# 设置流控制数量，防止 RFS 频繁切换上下文导致的 CPU 抖动
 echo "2048" > /proc/sys/net/core/rps_sock_flow_entries
 for rfc_file in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do
     echo "512" > "$rfc_file" 2>/dev/null
 done
 
-# --- 2. 硬件加速 (HNAT/PPE) 衔接逻辑 ---
-# 关键：必须确保硬件加速开启，否则 CPU 处理 100M+ 流量必死
-# 在 MT7621 上，这通常由内核模块 hw_nat 驱动，我们确保网卡特性开启
+# --- 2. 硬件加速与网卡特性 ---
 for eth in $(ls /sys/class/net | grep -E 'eth|wan|lan'); do
     ethtool -K "$eth" gro on 2>/dev/null
 done
 
-# --- 3. 内存管理：弃 KSM 保 zstd ---
-# MT7621 只有 128M/256M，KSM 扫描会直接吞掉那点可怜的 MIPS 算力
-# 我们强制使用 zstd 压缩，并将 swappiness 调低，减少 I/O 等待
+# --- 3. 内存管理：zram + zstd ---
 if [ -b /dev/zram0 ]; then
     swapoff /dev/zram0 2>/dev/null
     echo 1 > /sys/block/zram0/reset 2>/dev/null
-    if grep -q "zstd" /sys/block/zram0/comp_algorithm; then
-        echo zstd > /sys/block/zram0/comp_algorithm
-    fi
+    # 强制检查并设置 zstd
+    [ -f /sys/block/zram0/comp_algorithm ] && echo zstd > /sys/block/zram0/comp_algorithm
     TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
+    # 分配 50% 内存作为压缩 Swap
     echo "$((TOTAL_MEM / 2 * 1024))" > /sys/block/zram0/disksize
     mkswap /dev/zram0 >/dev/null
     swapon -p 10 /dev/zram0
 fi
 
-# --- 4. 彻底铲除 ICMP 瘀堵 (恢复链路主权) ---
-# 恢复默认的 ICMP 处理，确保 MTU 发现机制正常
+# --- 4. 链路主权恢复 ---
 sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1
 sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1
-sysctl -w net.ipv4.icmp_ratelimit=0  # 设为 0 彻底不限制，保证响应
+sysctl -w net.ipv4.icmp_ratelimit=0
 
-# --- 5. 设定mt7621养老参数扶持内存无oom
-# 1. 降低连接数压力，保护 256M 内存
-sysctl -w net.netfilter.nf_conntrack_max=16384
+# --- 5. MT7621 养老与 TCP 调优 ---
+cat <<EOF >> /etc/sysctl.conf
+net.netfilter.nf_conntrack_max=16384
+net.netfilter.nf_conntrack_tcp_timeout_established=600
+net.netfilter.nf_conntrack_tcp_timeout_close_wait=30
+net.core.netdev_max_backlog=2048
+net.ipv4.tcp_fastopen=3
+net.core.default_qdisc=fq_codel
+net.ipv4.tcp_congestion_control=bbr
+vm.swappiness=100
+EOF
+sysctl -p
 
-# 2. 缩短连接释放时间，让老兵快速“回气”
-sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=600
-sysctl -w net.netfilter.nf_conntrack_tcp_timeout_close_wait=30
-
-# 3. 适度的网卡队列，防止延迟堆积
-sysctl -w net.core.netdev_max_backlog=2048
-
-# 4. 针对 74Kc 的 TCP 优化
-sysctl -w net.ipv4.tcp_fastopen=3
-sysctl -w net.core.default_qdisc=fq_codel
-sysctl -w net.ipv4.tcp_congestion_control=bbr
-sysctl -w vm.swappiness=60
-
-# 5. 针对无线环境优化
-# 1. 自动定位 2.4G 和 5G 网卡
-# MT7621 常见的是 radio0 (2.4G) 和 radio1 (5G)
-# 我们用循环处理，确保所有无线接口都应用优化
-
+# --- 6. 无线环境极致固化 ---
 for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
-    # 强制不扫描邻居频道（解决 MT7621 开启 40MHz/80MHz 时的“退让”导致的掉速）
     uci set wireless.${radio}.noscan='1'
-    
-    # 针对老兵的稳定性优化：固定国家码为 US 或 AU（信号强度通常更高）
-    uci set wireless.${radio}.country='AU’
-
-    # 禁用过时的 802.11b 模式，减少管理帧对 CPU 的干扰
+    uci set wireless.${radio}.country='AU'
     uci set wireless.${radio}.legacy_rates='0'
 done
 
-# 2. 针对 5G 频段的特定加持 (如果有 radio1)
-if uci get wireless.radio1 >/dev/null 2>&1; then
-    uci set wireless.radio1.bandwidth='80MHz'
-fi
-
-# 3. 提交修改并强制生效
+[ -n "$(uci get wireless.radio1 2>/dev/null)" ] && uci set wireless.radio1.bandwidth='80MHz'
 uci commit wireless
-# 注意：在 uci-defaults 里不需要执行 wifi restart，系统初始化会自动加载新配置
 
-# --- 6.Passwall改造为MRS轻量尖刀版
-
-# 1.告诉 PassWall 使用我们固化的 Xray 资源路径
+# --- 7. Passwall 改造为 MRS 轻量尖刀版 ---
+# 确保路径与你的 DIY2 锻造路径一致
 uci set passwall.@global[0].xray_res_path='/etc/xray/rules'
-
-# 2.核心分流逻辑设定：
-# 我们不使用重型的 .dat，直接指定 MRS 规则
 uci set passwall.@global[0].tcp_proxy_mode='chnroute'
 uci set passwall.@global[0].udp_proxy_mode='chnroute'
-#!/bin/sh
-
-# 3.针对 AI 全集和 GPT 的精准对位 (假设你已经在 PassWall UI 预设了这些标签)
-# 强制让特定流量通过 Xray 的分流引擎解析这些 MRS
-uci set passwall.@global[0].remote_dns='1.1.1.1' # 配合 chinadns-ng
+uci set passwall.@global[0].remote_dns='1.1.1.1'
 
 uci commit passwall
+
+logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接，MRS 规则已对位。"
 exit 0
-logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接 HNAT，ICMP 限制已解除。"
