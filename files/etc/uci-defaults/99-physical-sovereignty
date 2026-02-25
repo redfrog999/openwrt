@@ -54,7 +54,12 @@ for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1
     uci set wireless.${radio}.legacy_rates='0'
 done
 
-[ -n "$(uci get wireless.radio1 2>/dev/null)" ] && uci set wireless.radio1.bandwidth='80MHz'
+# 假设 radio0 是 2.4G 的 MT7615强制关闭
+uci set wireless.radio0.disabled='1'
+
+# 强制压低发射功率到 2dBm，并关闭信道扫描
+uci set wireless.radio0.txpower='2'
+uci set wireless.radio0.bgscan='0' 
 uci commit wireless
 
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接，MRS 规则已对位。"
