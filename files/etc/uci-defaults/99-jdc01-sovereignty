@@ -84,6 +84,13 @@ if [ -d /sys/class/net/bond0 ]; then
     echo "layer3+4" > /sys/class/net/bond0/bonding/xmit_hash_policy
 fi
 
+# ---------------------------------------------------------
+# 5. 中断合并调优 (Interrupt Coalescing)
+# ---------------------------------------------------------
+# 让网卡每积攒 16 个包或者每过 50 微秒才去“烦”一次 CPU
+if command -v ethtool >/dev/null 2>&1; then
+    ethtool -C eth0 rx-frames 16 rx-usecs 50 tx-frames 16 tx-usecs 50 >/dev/null 2>&1
+fi
 # 增加接口发送队列长度，配合 PPE 降低软中断负载
 for dev in ra0 rai0 bond0 eth0; do
     if ifconfig $dev > /dev/null 2>&1; then
