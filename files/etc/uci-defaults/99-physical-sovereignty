@@ -52,8 +52,6 @@ for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1
     uci set wireless.${radio}.noscan='1'
     uci set wireless.${radio}.country='AU'
     uci set wireless.${radio}.legacy_rates='0'
-    uci set wireless.${radio0}.disabled='1'
-    uci set wireless.${radio0}.txpower='2'
     uci set wireless.${radio0}.bgscan='0' 
 done
 
