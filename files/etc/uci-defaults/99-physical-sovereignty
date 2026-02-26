@@ -47,7 +47,62 @@ vm.swappiness=100
 EOF
 sysctl -p
 
-# --- 6. 无线环境极致固化 ---
+#!/bin/sh
+
+# --- 6.MT7615分离调用实现异构加速及Kernel极度优化调参
+#!/bin/sh
+
+# ---------------------------------------------------------
+# 1. 中断主权隔离 (针对双 MT7615 异构分流)
+# ---------------------------------------------------------
+# 动态获取 IRQ 并绑定核心 (22->CPU0, 23->CPU1)
+IRQ_RADIO0=$(grep -m 1 "mt7615e" /proc/interrupts | awk -F: '{print $1}' | tr -d ' ')
+IRQ_RADIO1=$(grep "mt7615e" /proc/interrupts | tail -n 1 | awk -F: '{print $1}' | tr -d ' ')
+
+[ -n "$IRQ_RADIO0" ] && echo 1 > /proc/irq/$IRQ_RADIO0/smp_affinity
+[ -n "$IRQ_RADIO1" ] && echo 2 > /proc/irq/$IRQ_RADIO1/smp_affinity
+
+
+# 顺便把 PPE 硬件加速也绑了 (通常是最后一个线程)
+IRQ_PPE=$(grep "ethernet" /proc/interrupts | awk -F: '{print $1}' | tr -d ' ')
+[ -n "$IRQ_PPE" ] && echo 4 > /proc/irq/$IRQ_PPE/smp_affinity
+
+# ---------------------------------------------------------
+# 2. 硬件层 Ring Buffer 扩容 (ethtool 注入)
+# ---------------------------------------------------------
+# 直接将以太网物理接口的收发描述符队列拉满到 2048
+if command -v ethtool >/dev/null 2>&1; then
+    ethtool -G eth0 rx 2048 tx 2048 >/dev/null 2>&1
+fi
+
+# ---------------------------------------------------------
+# 3. PPE 与网络栈深度压强调优
+# ---------------------------------------------------------
+# 缩短 TCP 建立连接超时，为 ZSTD 内存腾挪空间
+echo 600 > /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established
+# 增大网络积压队列，缓冲 4K 视频突发流量
+echo 5000 > /proc/sys/net/core/netdev_max_backlog
+# 优化 VFS 压力与脏数据比例，保护 130MB 健康水位
+echo 125 > /proc/sys/vm/vfs_cache_pressure
+echo 10 > /proc/sys/vm/dirty_ratio
+echo 5 > /proc/sys/vm/dirty_background_ratio
+
+# ---------------------------------------------------------
+# 4. 链路聚合哈希与接口发送队列调优
+# ---------------------------------------------------------
+# 强制 L3+L4 哈希策略
+if [ -d /sys/class/net/bond0 ]; then
+    echo "layer3+4" > /sys/class/net/bond0/bonding/xmit_hash_policy
+fi
+
+# 增加接口发送队列长度，配合 PPE 降低软中断负载
+for dev in ra0 rai0 bond0 eth0; do
+    if ifconfig $dev > /dev/null 2>&1; then
+        ifconfig $dev txqueuelen 2048
+    fi
+done
+
+# --- 7. 无线环境极致固化 ---
 for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.${radio}.noscan='1'
     uci set wireless.${radio}.country='AU'
