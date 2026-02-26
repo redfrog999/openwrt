@@ -1,0 +1,103 @@
+#!/bin/sh
+
+# --- 1. RPS/RFS 核心对齐 ---
+# f = 1111 (4个逻辑核心全开)
+for rps_file in /sys/class/net/*/queues/rx-*/rps_cpus; do
+    echo "f" > "$rps_file" 2>/dev/null
+done
+
+echo "2048" > /proc/sys/net/core/rps_sock_flow_entries
+for rfc_file in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do
+    echo "512" > "$rfc_file" 2>/dev/null
+done
+
+# --- 2. 硬件加速与网卡特性 ---
+for eth in $(ls /sys/class/net | grep -E 'eth|wan|lan'); do
+    ethtool -K "$eth" gro on 2>/dev/null
+done
+
+# --- 3. 内存管理：zram + zstd ---
+if [ -b /dev/zram0 ]; then
+    swapoff /dev/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    # 强制检查并设置 zstd
+    [ -f /sys/block/zram0/comp_algorithm ] && echo zstd > /sys/block/zram0/comp_algorithm
+    TOTAL_MEM=$(free | grep Mem | awk '{print $2}')
+    # 分配 50% 内存作为压缩 Swap
+    echo "$((TOTAL_MEM / 2 * 1024))" > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 10 /dev/zram0
+fi
+
+# --- 4. 链路主权恢复 ---
+sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1
+sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1
+sysctl -w net.ipv4.icmp_ratelimit=0
+
+# --- 5. MT7621 养老与 TCP 调优 ---
+cat <<EOF >> /etc/sysctl.conf
+net.netfilter.nf_conntrack_max=65535
+net.netfilter.nf_conntrack_tcp_timeout_established=600
+net.netfilter.nf_conntrack_tcp_timeout_close_wait=30
+net.core.netdev_max_backlog=2048
+net.ipv4.tcp_fastopen=3
+net.core.default_qdisc=fq_codel
+net.ipv4.tcp_congestion_control=bbr
+vm.swappiness=100
+EOF
+sysctl -p
+
+#!/bin/sh
+
+# --- 6.Kernel极度优化调参
+#!/bin/sh
+
+# 顺便把 PPE 硬件加速也绑了 (通常是最后一个线程)
+IRQ_PPE=$(grep "ethernet" /proc/interrupts | awk -F: '{print $1}' | tr -d ' ')
+[ -n "$IRQ_PPE" ] && echo 4 > /proc/irq/$IRQ_PPE/smp_affinity
+
+# ---------------------------------------------------------
+# 2. 硬件层 Ring Buffer 扩容 (ethtool 注入)
+# ---------------------------------------------------------
+# 直接将以太网物理接口的收发描述符队列拉满到 2048
+if command -v ethtool >/dev/null 2>&1; then
+    ethtool -G eth0 rx 2048 tx 2048 >/dev/null 2>&1
+fi
+
+# ---------------------------------------------------------
+# 3. PPE 与网络栈深度压强调优
+# ---------------------------------------------------------
+# 缩短 TCP 建立连接超时，为 ZSTD 内存腾挪空间
+echo 600 > /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established
+# 增大网络积压队列，缓冲 4K 视频突发流量
+echo 5000 > /proc/sys/net/core/netdev_max_backlog
+# 优化 VFS 压力与脏数据比例，保护 130MB 健康水位
+echo 125 > /proc/sys/vm/vfs_cache_pressure
+echo 10 > /proc/sys/vm/dirty_ratio
+echo 5 > /proc/sys/vm/dirty_background_ratio
+
+# ---------------------------------------------------------
+# 4. 链路聚合哈希与接口发送队列调优
+# ---------------------------------------------------------
+# 强制 L3+L4 哈希策略
+if [ -d /sys/class/net/bond0 ]; then
+    echo "layer3+4" > /sys/class/net/bond0/bonding/xmit_hash_policy
+fi
+
+# 增加接口发送队列长度，配合 PPE 降低软中断负载
+for dev in ra0 rai0 bond0 eth0; do
+    if ifconfig $dev > /dev/null 2>&1; then
+        ifconfig $dev txqueuelen 2048
+    fi
+done
+
+# --- 7. 无线环境极致固化 ---
+for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
+    uci set wireless.${radio}.noscan='1'
+    uci set wireless.${radio}.country='AU'
+    uci set wireless.${radio}.legacy_rates='0'
+    uci set wireless.${radio0}.bgscan='0' 
+done
+
+logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接，MRS 规则已对位。"
+exit 0
