@@ -94,7 +94,9 @@ echo 5 > /proc/sys/vm/dirty_background_ratio
 if [ -d /sys/class/net/bond0 ]; then
     echo "layer3+4" > /sys/class/net/bond0/bonding/xmit_hash_policy
 fi
-
+# 设置监控频率，确保链路故障时秒级切换
+    echo 100 > /sys/class/net/bond0/bonding/miimon
+fi
 # 增加接口发送队列长度，配合 PPE 降低软中断负载
 for dev in ra0 rai0 bond0 eth0; do
     if ifconfig $dev > /dev/null 2>&1; then
