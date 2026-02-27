@@ -64,9 +64,9 @@ sysctl -p
 # 1. 中断主权隔离 (针对双 MT7615 异构分流)
 # ---------------------------------------------------------
 # A. 禁用硬件卸载 (针对无线中继模式的兼容性，防止与无线驱动抢占总线)
-uci set network.globals.packet_steering='1'
-uci set firewall.@defaults[0].flow_offloading='0'
-uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci set network.globals.packet_steering='0'
+uci set firewall.@defaults[0].flow_offloading='1'
+uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci commit firewall
 
 # B. 中断绑定 (IRQ Affinity) - 硬合作模式
