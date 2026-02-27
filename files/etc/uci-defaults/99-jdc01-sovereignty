@@ -50,9 +50,9 @@ sysctl -p
 
 # --- 5.Kernel极度优化调参
 # 1. 基础逻辑优化
-uci set network.globals.packet_steering='1'
-uci set firewall.@defaults[0].flow_offloading='0'
-uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci set network.globals.packet_steering='0'
+uci set firewall.@defaults[0].flow_offloading='1'
+uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci commit firewall
 
 # 2. 针对 JDC01 的 RPS 深度绑定
