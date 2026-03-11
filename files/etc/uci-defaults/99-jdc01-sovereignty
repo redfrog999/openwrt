@@ -11,12 +11,7 @@ for rfc_file in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do
     echo "512" > "$rfc_file" 2>/dev/null
 done
 
-# --- 2. 硬件加速与网卡特性 ---
-for eth in $(ls /sys/class/net | grep -E 'eth|wan|lan'); do
-    ethtool -K "$eth" gro on 2>/dev/null
-done
-
-# --- 3. 内存管理：zram + zstd ---
+# --- 2. 内存管理：zram + zstd ---
 if [ -b /dev/zram0 ]; then
     swapoff /dev/zram0 2>/dev/null
     echo 1 > /sys/block/zram0/reset 2>/dev/null
@@ -29,7 +24,7 @@ if [ -b /dev/zram0 ]; then
     swapon -p 10 /dev/zram0
 fi
 
-# --- 4. MT7621 养老与 TCP 调优 ---
+# --- 3. MT7621 养老与 TCP 调优 ---
 cat <<EOF >> /etc/sysctl.conf
 net.netfilter.nf_conntrack_max=65535
 net.netfilter.nf_conntrack_tcp_timeout_established=600
@@ -48,7 +43,7 @@ sysctl -p
 
 #!/bin/sh
 
-# --- 5.Kernel极度优化调参
+# --- 4.Kernel极度优化调参
 # 1. 基础逻辑优化
 uci set network.globals.packet_steering='0'
 uci set firewall.@defaults[0].flow_offloading='1'
@@ -107,7 +102,7 @@ for dev in ra0 rai0 bond0 eth0; do
     fi
 done
 
-# --- 6. 无线环境极致固化 ---
+# --- 5. 无线环境极致固化 ---
 for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.${radio}.noscan='1'
     uci set wireless.${radio}.country='AU'
