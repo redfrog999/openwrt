@@ -11,12 +11,7 @@ for rfc_file in /sys/class/net/*/queues/rx-*/rps_flow_cnt; do
     echo "512" > "$rfc_file" 2>/dev/null
 done
 
-# --- 2. 硬件加速与网卡特性 ---
-for eth in $(ls /sys/class/net | grep -E 'eth|wan|lan'); do
-    ethtool -K "$eth" gro on 2>/dev/null
-done
-
-# --- 3. 内存管理：zram + zstd ---
+# --- 2. 内存管理：zram + zstd ---
 if [ -b /dev/zram0 ]; then
     swapoff /dev/zram0 2>/dev/null
     echo 1 > /sys/block/zram0/reset 2>/dev/null
@@ -29,12 +24,12 @@ if [ -b /dev/zram0 ]; then
     swapon -p 10 /dev/zram0
 fi
 
-# --- 4. 链路主权恢复 ---
+# --- 3. 链路主权恢复 ---
 sysctl -w net.ipv4.icmp_echo_ignore_broadcasts=1
 sysctl -w net.ipv4.icmp_ignore_bogus_error_responses=1
 sysctl -w net.ipv4.icmp_ratelimit=0
 
-# --- 5. MT7621 养老与 TCP 调优 ---
+# --- 4. MT7621 养老与 TCP 调优 ---
 cat <<EOF >> /etc/sysctl.conf
 net.netfilter.nf_conntrack_max=65535
 net.netfilter.nf_conntrack_tcp_timeout_established=600
@@ -57,19 +52,13 @@ sysctl -p
 
 #!/bin/sh
 
-# --- 6.MT7615分离调用实现异构加速及Kernel极度优化调参
+# --- 5.MT7615分离调用实现异构加速及Kernel极度优化调参
 #!/bin/sh
 
 # ---------------------------------------------------------
 # 1. 中断主权隔离 (针对双 MT7615 异构分流)
 # ---------------------------------------------------------
-# A. 禁用硬件卸载 (针对无线中继模式的兼容性，防止与无线驱动抢占总线)
-uci set network.globals.packet_steering='0'
-uci set firewall.@defaults[0].flow_offloading='1'
-uci set firewall.@defaults[0].flow_offloading_hw='1'
-uci commit firewall
-
-# B. 中断绑定 (IRQ Affinity) - 硬合作模式
+# A. 中断绑定 (IRQ Affinity) - 硬合作模式
 # MT7621 是双核四线程，核心 0/1 是物理核心，2/3 是逻辑线程
 # 我们将两颗 MT7615 的中断强行剥离到不同的物理核心上
 # 脚本自动获取 MT7615 的 IRQ 号并绑定
@@ -86,7 +75,7 @@ if [ ! -z "$IRQ_WIFI_B" ]; then
     echo 2 > /proc/irq/$IRQ_WIFI_B/smp_affinity  # 绑定第二块卡到 CPU1
 fi
 
-# C. 软中断聚合与 RPS/RFS 调优 (针对 4K HDR 大包流量)
+# B. 软中断聚合与 RPS/RFS 调优 (针对 4K HDR 大包流量)
 # 为所有以太网和无线接口开启多核接收调度
 for dev in eth0 ra0 rai0 ra1 rai1; do
     if [ -d "/sys/class/net/$dev" ]; then
@@ -97,7 +86,7 @@ done
 echo 32768 > /proc/sys/net/core/rps_sock_flow_entries
 
 
-# D. 针对应用层隧道的“气流”优化
+# C. 针对应用层隧道的“气流”优化
 # 确保隧道接口启用全核调度
 cat <<EOF > /etc/hotplug.d/iface/99-tunnel-tuning
 [ "\$ACTION" = "ifup" ] && {
@@ -137,7 +126,7 @@ if command -v ethtool >/dev/null 2>&1; then
 fi
 done
 
-# --- 7. 无线环境极致固化 ---
+# --- 6. 无线环境极致固化 ---
 for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
     uci set wireless.${radio}.noscan='1'
     uci set wireless.${radio}.country='AU'
