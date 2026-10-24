@@ -126,13 +126,5 @@ if command -v ethtool >/dev/null 2>&1; then
 fi
 done
 
-# --- 6. 无线环境极致固化 ---
-for radio in $(uci show wireless | grep =wifi-device | cut -d. -f2 | cut -d= -f1); do
-    uci set wireless.${radio}.noscan='1'
-    uci set wireless.${radio}.country='AU'
-    uci set wireless.${radio}.legacy_rates='0'
-    uci set wireless.${radio0}.bgscan='0' 
-done
-
 logger -t "MIPS-Optimizer" "MT7621 内核对齐完成：RPS(掩码F)已衔接，MRS 规则已对位。"
 exit 0
